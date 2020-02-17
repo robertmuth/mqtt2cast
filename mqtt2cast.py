@@ -9,17 +9,18 @@ import http.server
 import inspect
 import json
 import logging
-import multiprocessing
+import concurrent.futures
 import threading
 import time
 import urllib.request
 import zeroconf
+import ipaddress
 
 import paho.mqtt.client as mqtt
 
 import pychromecast
 import pychromecast.controllers.dashcast as dashcast
-#import pychromecast.controllers.youtube as youtube
+# import pychromecast.controllers.youtube as youtube
 import pychromecast.controllers.dashcast as dashcast
 
 
@@ -28,6 +29,9 @@ PARSER.add_argument("-b", "--mqtt_broker", default="192.168.1.1")
 PARSER.add_argument("-p", "--mqtt_port", default=1883)
 PARSER.add_argument("-d", "--dryrun", action="store_true", default=False)
 PARSER.add_argument("-v", "--verbose", action="store_true", default=False)
+PARSER.add_argument("-z", "--use_zeroconf", action="store_true", default=False)
+# scan this subnet (e.g. "192.168.1.1/24") potentially beside using zeroconf
+PARSER.add_argument("-n", "--scan_subnets", action='append')
 
 PARSER.add_argument("-s", "--host", default="")
 PARSER.add_argument("-q", "--port", default=7777)
@@ -37,6 +41,10 @@ GOOGLE_CAST_IDENTIFIER = "_googlecast._tcp.local."
 ARGS = PARSER.parse_args()
 if ARGS.verbose:
     logging.basicConfig(level=logging.INFO)
+
+if not ARGS.use_zeroconf and not ARGS.scan_subnets:
+    print ("you must specify either --use_zeroconf or at least one --scan_subnets=...")
+    quit(1)
 
 # sadly we have a circular dependency between these two globals:
 CAST_DEVICES = None
@@ -96,7 +104,6 @@ def StrippedObject(obj):
 class ComplexEncoder(json.JSONEncoder):
     def default(self, obj):
         return str(obj)
-
 
 
 ############################################################
@@ -180,7 +187,7 @@ class UrlCastController(pychromecast.controllers.BaseController):
                      repr(message), repr(data))
         return True
 
-    def load_url(self, url: str, kind: str = "loc"):
+    def load_url(self, url: str, kind: str="loc"):
         self.send_message({"type": kind, "url": url})
 
 
@@ -197,7 +204,7 @@ class CastDeviceWrapper:
         cast.wait()
         self.name = cast.device.friendly_name
         logging.info("found device: [%s] at %s", self.name, self.host)
-        #cast.dashcast = UrlCastController()
+        # cast.dashcast = UrlCastController()
         cast.dashcast = dashcast.DashCastController()
         cast.register_handler(cast.dashcast)
         # youtube controller is broken
@@ -242,15 +249,15 @@ class CastDeviceWrapper:
     def PlayMedia(self, song_url: str, mime_type="audio/mpeg3"):
         logging.info("PlayMedia %s %s", song_url, mime_type)
         mc = self.cast.media_controller
-        #print ("BEFORE", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
+        # print ("BEFORE", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
         self.history.log(self.host, "play_url", song_url)
         # mc.stop()
         # mc.block_until_active()
-        #mc.play_media(song_url, mime_type, stream_type="LIVE")
+        # mc.play_media(song_url, mime_type, stream_type="LIVE")
         mc.play_media(song_url, mime_type)
-        #print ("AFTER", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
-        #self.history.log(self.host, "cast_status", self.cast.status)
-        #self.history.log(self.host, "media_status", mc.status)
+        # print ("AFTER", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
+        # self.history.log(self.host, "cast_status", self.cast.status)
+        # self.history.log(self.host, "media_status", mc.status)
 
     def PlayYoutube(self, video_id: str):
         assert False, "currently broken in pychromecast"
@@ -294,7 +301,7 @@ class CastDeviceManager:
             self.name_map[cast.name] = cast
         except Exception as err:
             logging.error("registration failed for %s: %s", host, err)
-            self.history.log(host, "registration_error", str(err))
+            # self.history.log(host, "registration_error", str(err))
 
     # part of the zeroconf listener api
     @exception
@@ -312,10 +319,17 @@ class CastDeviceManager:
             self._RegisterCastDevice(host)
 
     def UpdateCastDevices(self):
-        # note there is also pychromecast.get_chromecasts()
-        zc = zeroconf.Zeroconf()
-        browser = zeroconf.ServiceBrowser(
-            zc, GOOGLE_CAST_IDENTIFIER, self)
+        if ARGS.use_zeroconf:
+            # note there is also pychromecast.get_chromecasts()
+            zc = zeroconf.Zeroconf()
+            browser = zeroconf.ServiceBrowser(
+                zc, GOOGLE_CAST_IDENTIFIER, self)
+        if ARGS.scan_subnets:
+            hosts = []
+            for sn in ARGS.scan_subnets:
+                hosts += [h.compressed for h in ipaddress.ip_network(sn)]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+                executor.map(self._RegisterCastDevice, hosts)
 
     def GetCasts(self, host: str):
         if not host:
@@ -480,10 +494,15 @@ def LoadUrlWrapper(topic: List[str], payload: bytes):
     CAST_DEVICES.LoadUrl(host, url)
 
 
+def RescanDevices():
+    global CAST_DEVICES
+    CAST_DEVICES.UpdateCastDevices()
+
+
 DISPATCH = [
-    ("/mqtt2cast/action/scan/#", None),
+    ("/mqtt2cast/action/scan/#", RescanDevices),
     ("/mqtt2cast/action/play_media/#", PlayMediaWrapper),
-    ("/mqtt2cast/action/play_youtube/#", PlayYoutubeWrapper),
+    #("/mqtt2cast/action/play_youtube/#", PlayYoutubeWrapper),
     #("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
     ("/mqtt2cast/action/stop_radio/#", StopMediaWrapper),
     ("/mqtt2cast/action/load_url/#", LoadUrlWrapper),
