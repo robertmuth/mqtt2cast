@@ -19,6 +19,8 @@ import paho.mqtt.client as mqtt
 
 import pychromecast
 import pychromecast.controllers.dashcast as dashcast
+#import pychromecast.controllers.youtube as youtube
+import pychromecast.controllers.dashcast as dashcast
 
 
 PARSER = argparse.ArgumentParser(description="mqtt2cast")
@@ -70,7 +72,7 @@ def ObjToDict(data):
     elif hasattr(data, "__dict__"):
         return data.__dict__
     else:
-        assert False, data
+        return {"payload": str(data)}
 
 
 def PruneDict(d):
@@ -194,9 +196,13 @@ class CastDeviceWrapper:
         cast = pychromecast.Chromecast(host=host)
         cast.wait()
         self.name = cast.device.friendly_name
-        logging.info("found device: %s at %s", self.name, self.host)
-        cast.dashcast = UrlCastController()
+        logging.info("found device: [%s] at %s", self.name, self.host)
+        #cast.dashcast = UrlCastController()
+        cast.dashcast = dashcast.DashCastController()
         cast.register_handler(cast.dashcast)
+        # youtube controller is broken
+        # cast.yt = youtube.YouTubeController()
+        # cast.register_handler(cast.yt)
         cast.register_status_listener(self)
         cast.media_controller.register_status_listener(self)
         cast.register_launch_error_listener(self)
@@ -233,24 +239,34 @@ class CastDeviceWrapper:
     def new_connection_status(self, status):
         self.EmitMessage("connection_status", status)
 
-    def PlaySong(song_url: str, mime_type="audio/mpeg3"):
-        logging.info("PLAY %s %s", song_url, mime_type)
+    def PlayMedia(self, song_url: str, mime_type="audio/mpeg3"):
+        logging.info("PlayMedia %s %s", song_url, mime_type)
         mc = self.cast.media_controller
-        # mc.stop()
+        #print ("BEFORE", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
         self.history.log(self.host, "play_url", song_url)
+        # mc.stop()
+        # mc.block_until_active()
+        #mc.play_media(song_url, mime_type, stream_type="LIVE")
         mc.play_media(song_url, mime_type)
-        mc.block_until_active()
-        self.history.log(self.host, "cast_status", repr(
-            self.cast.status))
-        self.history.log(self.host, "media_status",
-                         repr(StrippedObject(mc.status)))
+        #print ("AFTER", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
+        #self.history.log(self.host, "cast_status", self.cast.status)
+        #self.history.log(self.host, "media_status", mc.status)
 
-    def LoadUrlOnCast(url: str):
+    def PlayYoutube(self, video_id: str):
+        assert False, "currently broken in pychromecast"
+        logging.info("PlayYoutube %s", song_id)
+        yt = self.cast.yt
+        self.history.log(self.host, "play_video", video_id)
+        yt.play_video(video_id)
+
+    def LoadUrl(self, url: str):
         self.cast.quit_app()
         dc = self.cast.dashcast
         self.history.log(self.host, "load_url", url)
+        dc.load_url(url)
+        return
         dc.launch()
-        logging.info("WAIT LoadUrlOnCast")
+        logging.info("WAIT LoadUrl")
         for i in range(10):
             if dc.is_active:
                 break
@@ -272,19 +288,25 @@ class CastDeviceManager:
     def _RegisterCastDevice(self, host):
         try:
             cast = CastDeviceWrapper(host, self.history)
+            logging.info("adding host: [%s]", cast.host)
             self.host_map[cast.host] = cast
+            logging.info("adding name: [%s]", cast.name)
             self.name_map[cast.name] = cast
         except Exception as err:
+            logging.error("registration failed for %s: %s", host, err)
             self.history.log(host, "registration_error", str(err))
 
     # part of the zeroconf listener api
+    @exception
     def remove_service(self, zc, type, name):
         pass
 
     # part of the zeroconf listener api
+    @exception
     def add_service(self, zc, type, name):
         info = zc.get_service_info(type, name)
         ips = zc.cache.entries_with_name(info.server.lower())
+        assert ips
         for dnsaddress in ips:
             host = repr(dnsaddress)
             self._RegisterCastDevice(host)
@@ -302,15 +324,20 @@ class CastDeviceManager:
             return [self.host_map[host]]
         if host in self.name_map:
             return [self.name_map[host]]
+        logging.warning("host not found: [%s] %s", host, self.name_map.keys())
         return []
 
-    def PlaySong(self, host: str, song_url: str):
+    def PlayMedia(self, host: str, song_url: str):
         for cast in self.GetCasts(host):
-            cast.PlaySong(song_url)
+            cast.PlayMedia(song_url)
 
-    def LoadUrlOnCast(self, host, url: str):
+    def PlayYoutube(self, host: str, video_id: str):
         for cast in self.GetCasts(host):
-            cast.LoadUrlOnCast(url)
+            cast.PlayYoutube(video_id)
+
+    def LoadUrl(self, host, url: str):
+        for cast in self.GetCasts(host):
+            cast.LoadUrl(url)
 
     def __str__(self):
         out = []
@@ -363,21 +390,41 @@ class MqttClient:
         """allback for when a PUBLISH message is received from the server"""
         logging.info("TRIGGER: %s %s %s", msg.topic,
                      msg.payload, userdata)
-        for sub, action in self.dispatcher:
-            if mqtt.topic_matches_sub(sub, msg.topic):
-                try:
+        try:
+            for sub, action in self.dispatcher:
+                if mqtt.topic_matches_sub(sub, msg.topic):
+                    print("match: ", sub)
                     action(msg.topic.split("/"), msg.payload)
-                except Exception as err:
-                    logging.error("failure: %s", str(err))
-                break
-        else:
-            logging.info("message did no match")
+                    break
+            else:
+                logging.warning("message did no match")
+        except Exception as err:
+            logging.error("failure: %s", str(err))
 
 
 ############################################################
 # Cast devices cannot play back playlists
 # The code below helps extracting songs from playlists
 ############################################################
+def GetPlsSongs(data):
+    out = []
+    for line in str(data, "utf-8").split("\n"):
+        logging.info("line: [%s]", line)
+        if line.startswith("File"):
+            out.append(line.split("=", 1)[1].strip())
+    return out
+
+
+def GetM3uSongs(data):
+    out = []
+    for line in str(data, "utf-8").split("\n"):
+        logging.info("line: [%s]", line)
+        if line.startswith("#"):
+            continue
+        out.append(line.strip())
+    return out
+
+
 def GetSongs(url):
     global URL_MAP
     # if url.startswith("@"):
@@ -392,46 +439,52 @@ def GetSongs(url):
     return songs
 
 
-@exception
 def PlayMediaWrapper(topic: List[str], payload: bytes):
     global CAST_DEVICES
-    host = topic[3]
+    host = topic[4]
     url = str(payload, 'utf-8')
     logging.info("PlayMediaWrapper %s %s", host, url)
     songs = GetSongs(url)
     logging.info("Songs [%s]: %s", url, songs)
     if not songs:
         return
-    CAST_DEVICES.PlaySong(host, songs[0])
+    CAST_DEVICES.PlayMedia(host, songs[0])
 
 
-@exception
+def PlayYoutubeWrapper(topic: List[str], payload: bytes):
+    global CAST_DEVICES
+    host = topic[4]
+    video_id = str(payload, 'utf-8')
+    logging.info("PlayYoutubeWrapper %s %s", host, video_id)
+    CAST_DEVICES.PlayYoutube(host, video_id)
+
+
 def StopMediaWrapper(topic: List[str], payload: bytes):
     global CAST_DEVICES
-    host = topic[3]
-    CAST_DEVICES.PlaySong(host, "")
+    host = topic[4]
+    CAST_DEVICES.PlayMedia(host, "")
 
 
-def PlayAlarmWrapper(topic: List[str], payload: bytes):
-    if len(topic) == 1:
-        topic.append("ALL")
-    if not payload:
-        payload = bytes(URL_MAP["alarm"], "utf-8")
-    PlayRadioWrapper(topic, payload)
+# def PlayAlarmWrapper(topic: List[str], payload: bytes):
+#     if len(topic) == 1:
+#         topic.append("ALL")
+#     if not payload:
+#         payload = bytes(URL_MAP["alarm"], "utf-8")
+#     PlayRadioWrapper(topic, payload)
 
 
 def LoadUrlWrapper(topic: List[str], payload: bytes):
-    host = topic[1]
+    global CAST_DEVICES
+    host = topic[4]
     url = str(payload, 'utf-8')
-    casts = GetCasts(host)
-    for cast in casts:
-        LoadUrlOnCast(cast, url)
+    CAST_DEVICES.LoadUrl(host, url)
 
 
 DISPATCH = [
     ("/mqtt2cast/action/scan/#", None),
     ("/mqtt2cast/action/play_media/#", PlayMediaWrapper),
-    ("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
+    ("/mqtt2cast/action/play_youtube/#", PlayYoutubeWrapper),
+    #("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
     ("/mqtt2cast/action/stop_radio/#", StopMediaWrapper),
     ("/mqtt2cast/action/load_url/#", LoadUrlWrapper),
 ]
