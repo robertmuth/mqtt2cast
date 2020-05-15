@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 """
+Simple MQTT to Google Cast Bridge
 """
-from typing import List, Dict
+from typing import List, Dict, Optional, Any, Tuple
 
 import argparse
 import functools
@@ -17,7 +18,6 @@ import zeroconf
 import ipaddress
 import urllib
 import paho.mqtt.client as mqtt
-from typing import Optional
 
 import pychromecast
 import pychromecast.controllers.dashcast as dashcast
@@ -52,7 +52,7 @@ if not ARGS.use_zeroconf and not ARGS.scan_subnets:
 
 # sadly we have a circular dependency between these two globals:
 CAST_DEVICES: Optional["CastDeviceManager"] = None
-MQTT_CLIENT = Optional["MqttClient"]
+MQTT_CLIENT: Optional["MqttClient"] = None
 
 
 ############################################################
@@ -172,7 +172,10 @@ class History:
         html += ["</select>"]
         html += ["<select name=action>",
                  "<option value=play_media>play_media</option>",
+                 #"<option value=play_youtube>play_youtube</option>",
+                 "<option value=stop_media>stop_media</option>",
                  "<option value=play_url>play_url</option>",
+                 "<option value=scan>scan</option>",
                  "</select>"]
 
         html += ["<input type=text name=arg>",
@@ -269,6 +272,7 @@ class CastDeviceWrapper:
         self.EmitMessage("connection_status", status)
 
     def PlayMedia(self, song_url: str, mime_type="audio/mpeg3"):
+        print("@@@@@@@ SONG ", song_url)
         logging.info("PlayMedia %s %s", song_url, mime_type)
         mc = self.cast.media_controller
         # print ("BEFORE", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
@@ -384,7 +388,7 @@ class CastDeviceManager:
 
 class MqttClient:
 
-    def __init__(self, name, host, port, dispatcher: Dict = []):
+    def __init__(self, name, host, port, dispatcher: List = [Tuple[str, Any]]):
         self.name = name
         self.dispatcher = dispatcher
         self.client = mqtt.Client(name)
@@ -519,20 +523,21 @@ def LoadUrlWrapper(topic: List[str], payload: bytes):
     CAST_DEVICES.LoadUrl(host, url)
 
 
-def RescanDevices():
+def RescanDevices(topic: List[str], payload: bytes):
     global CAST_DEVICES
     CAST_DEVICES.UpdateCastDevices()
 
 
-DISPATCH = [
-    ("/mqtt2cast/action/scan/#", RescanDevices),
-    ("/mqtt2cast/action/play_media/#", PlayMediaWrapper),
-    # ("/mqtt2cast/action/play_youtube/#", PlayYoutubeWrapper),
-    # ("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
-    ("/mqtt2cast/action/stop_radio/#", StopMediaWrapper),
-    ("/mqtt2cast/action/load_url/#", LoadUrlWrapper),
-]
+ACTION_MAP = {"scan":  RescanDevices,
+              "play_media": PlayMediaWrapper,
+              # "play_youtube": PlayYoutubeWrapper,
+              "stop_media": StopMediaWrapper,
+              "load_url": LoadUrlWrapper
+              }
 
+DISPATCH = [(f"/mqtt2cast/action/{key}/#", val)
+            for key, val in ACTION_MAP.items()]
+# ("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
 
 HISTORY = History()
 
@@ -552,6 +557,12 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         print("DATA", post_data.decode('utf-8'))
         fields = urllib.parse.parse_qs(post_data.decode('utf-8'))
         print(fields)
+        action = fields.get("action", ["scan"])[0]
+        device = fields.get("device", [""])[0]
+        arg = fields.get("arg", [""])[0]
+        logging.info(f"web action [{action}] [{device}] [{arg}]")
+        wrapper = ACTION_MAP.get(action, RescanDevices)
+        wrapper(["", "", "", "", device], arg.encode("utf-8"))
         self.send_response(301)
         self.send_header('Location', '/')
         self.end_headers()
