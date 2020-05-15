@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 """
 Simple MQTT to Google Cast Bridge
+
+TODO: cyclic dependencied
 """
 from typing import List, Dict, Optional, Any, Tuple
 
@@ -21,8 +23,8 @@ import paho.mqtt.client as mqtt
 
 import pychromecast
 import pychromecast.controllers.dashcast as dashcast
+# needs casttube
 # import pychromecast.controllers.youtube as youtube
-import pychromecast.controllers.dashcast as dashcast
 
 
 PARSER = argparse.ArgumentParser(description="mqtt2cast")
@@ -134,55 +136,15 @@ HTML_EPILOG = """
 """
 
 
-class History:
-    """
-    Keep some history for displaying a status page
-    """
+HISTORY_LOG: Dict[Tuple[Any, Any], Any] = {}
 
-    def __init__(self):
-        self._log = {}
 
-    def log(self, host, kind, data):
-        now = time.strftime("%y/%m/%d %H:%M:%S")
-        logging.info("%s %s %s", host, kind, now)
-        self._log[(host, kind)] = (now, data)
+def LogHistory(host, kind, data):
+    global HISTORY_LOG
+    now = time.strftime("%y/%m/%d %H:%M:%S")
+    logging.info("%s %s %s", host, kind, now)
+    HISTORY_LOG[(host, kind)] = (now, data)
 
-    def RenderStatusPage(self):
-        html = ["<table border=1>"]
-        last = None
-        for host, kind in sorted(self._log.keys()):
-            timestamp, data = self._log[(host, kind)]
-            if host != last:
-                html.append("<tr><th colspan=3>%s</th></tr>" % host)
-                last = host
-
-            content = [str(type(data))]
-            for k, v in sorted(PruneDict(ObjToDict(data)).items()):
-                content.append("%s: %s" % (k, repr(v)))
-            html.append(
-                "<tr><td>%s</td><td><pre>%s</pre></td><td><pre>%s</pre></td></tr>" %
-                (kind, timestamp, HtmlCleanup(
-                    "\n".join(content))))
-        html += ["</table>"]
-        html += ["<hr>",
-                 "<form action=/action method=post>"]
-        html += ["<select name=device>"]
-        for name in CAST_DEVICES.name_map.keys():
-            html += [f"<option value='{name}'>{name}</option>"]
-        html += ["</select>"]
-        html += ["<select name=action>",
-                 "<option value=play_media>play_media</option>",
-                 #"<option value=play_youtube>play_youtube</option>",
-                 "<option value=stop_media>stop_media</option>",
-                 "<option value=play_url>play_url</option>",
-                 "<option value=scan>scan</option>",
-                 "</select>"]
-
-        html += ["<input type=text name=arg>",
-                 "<input type=submit value=Send>",
-                 "</form>"]
-
-        return HTML_PROLOG + "\n".join(html) + HTML_EPILOG
 
 ############################################################
 # Chrome Cast Support
@@ -219,8 +181,7 @@ class CastDeviceWrapper:
     Wrapps a single device
     """
 
-    def __init__(self, host, history):
-        self.history = history
+    def __init__(self, host):
         self.host = host
         # this may raise an exception
         cast = pychromecast.Chromecast(host=host)
@@ -239,9 +200,9 @@ class CastDeviceWrapper:
         cast.register_connection_listener(self)
         self.cast = cast
         mc = cast.media_controller
-        self.history.log(self.host, "device_status", cast.device)
-        self.history.log(self.host, "cast_status", cast.status)
-        self.history.log(self.host, "media_status", mc.status)
+        LogHistory(self.host, "device_status", cast.device)
+        LogHistory(self.host, "cast_status", cast.status)
+        LogHistory(self.host, "media_status", mc.status)
 
     def EmitMessage(self, event, data):
         global MQTT_CLIENT
@@ -249,7 +210,7 @@ class CastDeviceWrapper:
             "/mqtt2cast/%s/%s" %
             (self.name, event), json.dumps(
                 ObjToDict(data), cls=ComplexEncoder))
-        self.history.log(self.host, event, data)
+        LogHistory(self.host, event, data)
 
     # callback API for chrome cast
     @exception
@@ -272,11 +233,10 @@ class CastDeviceWrapper:
         self.EmitMessage("connection_status", status)
 
     def PlayMedia(self, song_url: str, mime_type="audio/mpeg3"):
-        print("@@@@@@@ SONG ", song_url)
         logging.info("PlayMedia %s %s", song_url, mime_type)
         mc = self.cast.media_controller
         # print ("BEFORE", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
-        self.history.log(self.host, "play_url", song_url)
+        LogHistory(self.host, "play_url", song_url)
         # mc.stop()
         # mc.block_until_active()
         # mc.play_media(song_url, mime_type, stream_type="LIVE")
@@ -286,16 +246,15 @@ class CastDeviceWrapper:
         # self.history.log(self.host, "media_status", mc.status)
 
     def PlayYoutube(self, video_id: str):
-        assert False, "currently broken in pychromecast"
         logging.info("PlayYoutube %s", song_id)
         yt = self.cast.yt
-        self.history.log(self.host, "play_video", video_id)
+        LogHistory(self.host, "play_video", video_id)
         yt.play_video(video_id)
 
     def LoadUrl(self, url: str):
         self.cast.quit_app()
         dc = self.cast.dashcast
-        self.history.log(self.host, "load_url", url)
+        LogHistory(self.host, "load_url", url)
         dc.load_url(url)
         return
         dc.launch()
@@ -312,15 +271,14 @@ class CastDeviceManager:
     Manages all the cast devices in the network
     """
 
-    def __init__(self, history):
-        self.history = history
+    def __init__(self):
         self.host_map = {}
         self.name_map = {}
         self.UpdateCastDevices()
 
     def _RegisterCastDevice(self, host):
         try:
-            cast = CastDeviceWrapper(host, self.history)
+            cast = CastDeviceWrapper(host)
             logging.info("adding host: [%s]", cast.host)
             self.host_map[cast.host] = cast
             logging.info("adding name: [%s]", cast.name)
@@ -539,17 +497,55 @@ DISPATCH = [(f"/mqtt2cast/action/{key}/#", val)
             for key, val in ACTION_MAP.items()]
 # ("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
 
-HISTORY = History()
+
+def RenderStatusPage(history_log, cast_devices):
+    global HTML_PROLOG, HTML_EPILOG
+    html = ["<table border=1>"]
+    last = None
+    for host, kind in sorted(history_log.keys()):
+        timestamp, data = history_log[(host, kind)]
+        if host != last:
+            html.append("<tr><th colspan=3>%s</th></tr>" % host)
+            last = host
+
+        content = [str(type(data))]
+        for k, v in sorted(PruneDict(ObjToDict(data)).items()):
+            content.append("%s: %s" % (k, repr(v)))
+        html.append(
+            "<tr><td>%s</td><td><pre>%s</pre></td><td><pre>%s</pre></td></tr>" %
+            (kind, timestamp, HtmlCleanup(
+                "\n".join(content))))
+    html += ["</table>"]
+    html += ["<hr>",
+             "<form action=/action method=post>"]
+    html += ["<select name=device>"]
+    for name in cast_devices.name_map.keys():
+        html += [f"<option value='{name}'>{name}</option>"]
+    html += ["</select>"]
+    html += ["<select name=action>",
+             "<option value=play_media>play_media</option>",
+             #"<option value=play_youtube>play_youtube</option>",
+             "<option value=stop_media>stop_media</option>",
+             "<option value=play_url>play_url</option>",
+             "<option value=scan>scan</option>",
+             "</select>"]
+
+    html += ["<input type=text name=arg>",
+             "<input type=submit value=Send>",
+             "</form>"]
+
+    return HTML_PROLOG + "\n".join(html) + HTML_EPILOG
 
 
 class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         print("GET", self.path)
-        global HISTORY
+        global HISTORY_LOG, CAST_DEVICES
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(bytes(HISTORY.RenderStatusPage(), "utf-8"))
+        self.wfile.write(bytes(RenderStatusPage(
+            HISTORY_LOG, CAST_DEVICES), "utf-8"))
 
     def do_POST(self):
         content_length = int(self.headers['Content-Length'])
@@ -569,7 +565,7 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
 
 logging.info("start device manager")
-CAST_DEVICES = CastDeviceManager(HISTORY)
+CAST_DEVICES = CastDeviceManager()
 
 logging.info("starting mqtt handler")
 MQTT_CLIENT = MqttClient("mqtt2cast", ARGS.mqtt_broker,
