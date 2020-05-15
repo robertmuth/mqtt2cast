@@ -15,8 +15,9 @@ import time
 import urllib.request
 import zeroconf
 import ipaddress
-
+import urllib
 import paho.mqtt.client as mqtt
+from typing import Optional
 
 import pychromecast
 import pychromecast.controllers.dashcast as dashcast
@@ -30,8 +31,8 @@ PARSER.add_argument("-p", "--mqtt_port", default=1883)
 PARSER.add_argument("-d", "--dryrun", action="store_true", default=False)
 PARSER.add_argument("-v", "--verbose", action="store_true", default=False)
 PARSER.add_argument("-z", "--use_zeroconf", action="store_true", default=False)
-# scan this subnet (e.g. "192.168.1.1/24") potentially beside using zeroconf
-PARSER.add_argument("-n", "--scan_subnets", action='append')
+PARSER.add_argument("-n", "--scan_subnets", action='append',
+                    help="scan this subnet (e.g. '192.168.1.0/24') potentially beside using zeroconf")
 
 PARSER.add_argument("-s", "--host", default="")
 PARSER.add_argument("-q", "--port", default=7777)
@@ -43,12 +44,12 @@ if ARGS.verbose:
     logging.basicConfig(level=logging.INFO)
 
 if not ARGS.use_zeroconf and not ARGS.scan_subnets:
-    print ("you must specify either --use_zeroconf or at least one --scan_subnets=...")
+    print("you must specify either --use_zeroconf or at least one --scan_subnets=...")
     quit(1)
 
 # sadly we have a circular dependency between these two globals:
-CAST_DEVICES = None
-MQTT_CLIENT = None
+CAST_DEVICES: Optional["CastDeviceManager"] = None
+MQTT_CLIENT = Optional["MqttClient"]
 
 
 ############################################################
@@ -122,11 +123,9 @@ table {
 </style>
 </head>
 <body>
-<table border=1>
 """
 
 HTML_EPILOG = """
-</table>
 </body>
 </html>
 """
@@ -146,7 +145,7 @@ class History:
         self._log[(host, kind)] = (now, data)
 
     def RenderStatusPage(self):
-        html = []
+        html = ["<table border=1>"]
         last = None
         for host, kind in sorted(self._log.keys()):
             timestamp, data = self._log[(host, kind)]
@@ -159,6 +158,22 @@ class History:
                 content.append("%s: %s" % (k, repr(v)))
             html.append("<tr><td>%s</td><td><pre>%s</pre></td><td><pre>%s</pre></td></tr>" %
                         (kind, timestamp, HtmlCleanup("\n".join(content))))
+        html += ["</table>"]
+        html += ["<hr>",
+                 "<form action=/action method=post>"]
+        html += ["<select name=device>"]
+        for name in CAST_DEVICES.name_map.keys():
+            html += [f"<option value='{name}'>{name}</option>"]
+        html += ["</select>"]
+        html += ["<select name=action>",
+                 "<option value=play_media>play_media</option>",
+                 "<option value=play_url>play_url</option>",
+                 "</select>"]
+
+        html += ["<input type=text name=arg>",
+                 "<input type=submit value=Send>",
+                 "</form>"]
+
         return HTML_PROLOG + "\n".join(html) + HTML_EPILOG
 
 ############################################################
@@ -187,7 +202,7 @@ class UrlCastController(pychromecast.controllers.BaseController):
                      repr(message), repr(data))
         return True
 
-    def load_url(self, url: str, kind: str="loc"):
+    def load_url(self, url: str, kind: str = "loc"):
         self.send_message({"type": kind, "url": url})
 
 
@@ -362,7 +377,7 @@ class CastDeviceManager:
 
 class MqttClient:
 
-    def __init__(self, name, host, port, dispatcher: Dict=[]):
+    def __init__(self, name, host, port, dispatcher: Dict = []):
         self.name = name
         self.dispatcher = dispatcher
         self.client = mqtt.Client(name)
@@ -376,7 +391,7 @@ class MqttClient:
 
     # paho API - problems will be silently ignored without this
     def on_log(client, userdata, level, buff):
-        print ("!!!!!!!!!!!!!!!!!")
+        print("!!!!!!!!!!!!!!!!!")
         log.error("paho problem %s %s %s", userdata, level, buff)
 
     def EmitMessage(self, topic, message, retain=True):
@@ -502,8 +517,8 @@ def RescanDevices():
 DISPATCH = [
     ("/mqtt2cast/action/scan/#", RescanDevices),
     ("/mqtt2cast/action/play_media/#", PlayMediaWrapper),
-    #("/mqtt2cast/action/play_youtube/#", PlayYoutubeWrapper),
-    #("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
+    # ("/mqtt2cast/action/play_youtube/#", PlayYoutubeWrapper),
+    # ("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
     ("/mqtt2cast/action/stop_radio/#", StopMediaWrapper),
     ("/mqtt2cast/action/load_url/#", LoadUrlWrapper),
 ]
@@ -515,10 +530,21 @@ HISTORY = History()
 class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
+        print("GET", self.path)
         global HISTORY
         self.send_response(200)
         self.end_headers()
         self.wfile.write(bytes(HISTORY.RenderStatusPage(), "utf-8"))
+
+    def do_POST(self):
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+        print("DATA", post_data.decode('utf-8'))
+        fields = urllib.parse.parse_qs(post_data.decode('utf-8'))
+        print(fields)
+        self.send_response(301)
+        self.send_header('Location', '/')
+        self.end_headers()
 
 
 logging.info("start device manager")
@@ -529,7 +555,7 @@ MQTT_CLIENT = MqttClient("mqtt2cast", ARGS.mqtt_broker,
                          ARGS.mqtt_port, DISPATCH)
 
 
-logging.info("starting web interfaces")
+logging.info("starting web interfaces on port %d", ARGS.port)
 WEB_SERVER = http.server.HTTPServer(
     (ARGS.host, ARGS.port), SimpleHTTPRequestHandler)
 WEB_SERVER.serve_forever()
