@@ -31,8 +31,11 @@ PARSER.add_argument("-p", "--mqtt_port", default=1883)
 PARSER.add_argument("-d", "--dryrun", action="store_true", default=False)
 PARSER.add_argument("-v", "--verbose", action="store_true", default=False)
 PARSER.add_argument("-z", "--use_zeroconf", action="store_true", default=False)
-PARSER.add_argument("-n", "--scan_subnets", action='append',
-                    help="scan this subnet (e.g. '192.168.1.0/24') potentially beside using zeroconf")
+PARSER.add_argument(
+    "-n",
+    "--scan_subnets",
+    action='append',
+    help="scan this subnet (e.g. '192.168.1.0/24') potentially beside using zeroconf")
 
 PARSER.add_argument("-s", "--host", default="")
 PARSER.add_argument("-q", "--port", default=7777)
@@ -156,8 +159,10 @@ class History:
             content = [str(type(data))]
             for k, v in sorted(PruneDict(ObjToDict(data)).items()):
                 content.append("%s: %s" % (k, repr(v)))
-            html.append("<tr><td>%s</td><td><pre>%s</pre></td><td><pre>%s</pre></td></tr>" %
-                        (kind, timestamp, HtmlCleanup("\n".join(content))))
+            html.append(
+                "<tr><td>%s</td><td><pre>%s</pre></td><td><pre>%s</pre></td></tr>" %
+                (kind, timestamp, HtmlCleanup(
+                    "\n".join(content))))
         html += ["</table>"]
         html += ["<hr>",
                  "<form action=/action method=post>"]
@@ -237,8 +242,10 @@ class CastDeviceWrapper:
 
     def EmitMessage(self, event, data):
         global MQTT_CLIENT
-        MQTT_CLIENT.EmitMessage("/mqtt2cast/%s/%s" %
-                                (self.name, event), json.dumps(ObjToDict(data), cls=ComplexEncoder))
+        MQTT_CLIENT.EmitMessage(
+            "/mqtt2cast/%s/%s" %
+            (self.name, event), json.dumps(
+                ObjToDict(data), cls=ComplexEncoder))
         self.history.log(self.host, event, data)
 
     # callback API for chrome cast
@@ -404,8 +411,11 @@ class MqttClient:
     # in its infinite wisdom, paho silently drops errors in callbacks
     @exception
     def on_connect(self, client, userdata, rc, dummy):
-        logging.info("Connected with result code %s %s %s (if you see a lot of these you may have duplicate client names)",
-                     rc, userdata, dummy)
+        logging.info(
+            "Connected with result code %s %s %s (if you see a lot of these you may have duplicate client names)",
+            rc,
+            userdata,
+            dummy)
         self.EmitStatusMessage()
         # Subscribing in on_connect() means that if we lose the connection and
         # reconnect then subscriptions will be renewed.
