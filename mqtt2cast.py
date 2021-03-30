@@ -15,6 +15,7 @@ import logging
 import concurrent.futures
 import threading
 import time
+import platform
 import urllib.request
 import zeroconf
 import ipaddress
@@ -28,25 +29,28 @@ import pychromecast.controllers.dashcast as dashcast
 
 
 PARSER = argparse.ArgumentParser(description="mqtt2cast")
-PARSER.add_argument("-b", "--mqtt_broker", default="192.168.1.1")
-PARSER.add_argument("-p", "--mqtt_port", default=1883)
-PARSER.add_argument("-d", "--dryrun", action="store_true", default=False)
-PARSER.add_argument("-v", "--verbose", action="store_true", default=False)
-PARSER.add_argument("-z", "--use_zeroconf", action="store_true", default=False)
-PARSER.add_argument(
-    "-n",
-    "--scan_subnets",
-    action='append',
-    help="scan this subnet (e.g. '192.168.1.0/24') potentially beside using zeroconf")
-
-PARSER.add_argument("-s", "--host", default="")
-PARSER.add_argument("-q", "--port", default=7777)
+PARSER.add_argument("--mqtt_broker", default="192.168.1.1")
+PARSER.add_argument("--mqtt_port", default=1883)
+PARSER.add_argument("--dryrun", action="store_true", default=False)
+PARSER.add_argument("--verbose", action="store_true", default=False)
+PARSER.add_argument("--debug", action="store_true", default=False)
+PARSER.add_argument("--use_zeroconf", action="store_true", default=False)
+PARSER.add_argument("--scan_subnets", action='append',
+                    help="scan this subnet (e.g. '192.168.1.0/24') potentially beside using zeroconf")
+PARSER.add_argument("--host", default="",
+                    help="hostname to use for debug webserver")
+PARSER.add_argument("--port", default=7777,
+                    help="port to use for debug webserver")
 
 GOOGLE_CAST_IDENTIFIER = "_googlecast._tcp.local."
 
 ARGS = PARSER.parse_args()
+
 if ARGS.verbose:
     logging.basicConfig(level=logging.INFO)
+
+if ARGS.debug:
+    logging.basicConfig(level=logging.DEBUG)
 
 if not ARGS.use_zeroconf and not ARGS.scan_subnets:
     print("you must specify either --use_zeroconf or at least one --scan_subnets=...")
@@ -142,7 +146,7 @@ HISTORY_LOG: Dict[Tuple[Any, Any], Any] = {}
 def LogHistory(host, kind, data):
     global HISTORY_LOG
     now = time.strftime("%y/%m/%d %H:%M:%S")
-    logging.info("%s %s %s", host, kind, now)
+    logging.info(f"{host} {kind} {now}")
     HISTORY_LOG[(host, kind)] = (now, data)
 
 
@@ -207,9 +211,8 @@ class CastDeviceWrapper:
     def EmitMessage(self, event, data):
         global MQTT_CLIENT
         MQTT_CLIENT.EmitMessage(
-            "/mqtt2cast/%s/%s" %
-            (self.name, event), json.dumps(
-                ObjToDict(data), cls=ComplexEncoder))
+            f"chromecast/{self.name}/{event}",
+            json.dumps(ObjToDict(data), cls=ComplexEncoder))
         LogHistory(self.host, event, data)
 
     # callback API for chrome cast
@@ -272,19 +275,21 @@ class CastDeviceManager:
     """
 
     def __init__(self):
-        self.host_map = {}
-        self.name_map = {}
+        self.host_map: Dict[str, CastDeviceWrapper] = {}
+        self.name_map: Dict[str, CastDeviceWrapper] = {}
         self.UpdateCastDevices()
 
     def _RegisterCastDevice(self, host):
         try:
             cast = CastDeviceWrapper(host)
-            logging.info("adding host: [%s]", cast.host)
+            logging.info(f"adding host: [{cast.host}]")
             self.host_map[cast.host] = cast
-            logging.info("adding name: [%s]", cast.name)
+            logging.info(f"adding name: [{cast.name}]")
             self.name_map[cast.name] = cast
         except Exception as err:
-            logging.error("registration failed for %s: %s", host, err)
+            if not isinstance(err, pychromecast.error.ChromecastConnectionError):
+                logging.error(
+                    f"registration failed for {host}: {type(err)} {err}")
             # self.history.log(host, "registration_error", str(err))
 
     # part of the zeroconf listener api
@@ -350,7 +355,8 @@ class MqttClient:
         self.name = name
         self.dispatcher = dispatcher
         self.client = mqtt.Client(name)
-        self.client.will_set("/" + name + "/sys/status", "0", retain=True)
+        self.client.will_set(
+            f"{name}/{platform.node}/sys/status", "0", retain=True)
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         self.client.on_log = self.on_log
@@ -368,7 +374,8 @@ class MqttClient:
         self.client.publish(topic, message, retain)
 
     def EmitStatusMessage(self):
-        self.EmitMessage("/" + self.name + "/sys/status", "1", retain=True)
+        self.EmitMessage(
+            f"{self.name}/{platform.node}/sys/status", "1", retain=True)
 
     # in its infinite wisdom, paho silently drops errors in callbacks
     @exception
@@ -382,15 +389,14 @@ class MqttClient:
         # Subscribing in on_connect() means that if we lose the connection and
         # reconnect then subscriptions will be renewed.
         for sub, _ in self.dispatcher:
-            logging.info("subscribing to mqtt topic [%s]", sub)
+            logging.info(f"subscribing to mqtt topic [{sub}]")
             self.client.subscribe(sub)
 
     # in its infinite wisdom, paho silently drops errors in callbacks
     @exception
     def on_message(self, client, userdata, msg):
         """allback for when a PUBLISH message is received from the server"""
-        logging.info("TRIGGER: %s %s %s", msg.topic,
-                     msg.payload, userdata)
+        logging.info(f"received: {msg.topic} {msg.payload}")
         try:
             for sub, action in self.dispatcher:
                 if mqtt.topic_matches_sub(sub, msg.topic):
@@ -410,7 +416,7 @@ class MqttClient:
 def GetPlsSongs(data):
     out = []
     for line in str(data, "utf-8").split("\n"):
-        logging.info("line: [%s]", line)
+        logging.info(f"line: [{line}]")
         if line.startswith("File"):
             out.append(line.split("=", 1)[1].strip())
     return out
@@ -419,7 +425,7 @@ def GetPlsSongs(data):
 def GetM3uSongs(data):
     out = []
     for line in str(data, "utf-8").split("\n"):
-        logging.info("line: [%s]", line)
+        logging.info(f"line: [{line}]")
         if line.startswith("#"):
             continue
         out.append(line.strip())
@@ -442,8 +448,8 @@ def GetSongs(url):
 
 def PlayMediaWrapper(topic: List[str], payload: bytes):
     global CAST_DEVICES
-    host = topic[4]
-    url = str(payload, 'utf-8')
+    host = topic[3]
+    url = payload.decode('utf-8')
     logging.info("PlayMediaWrapper %s %s", host, url)
     songs = GetSongs(url)
     logging.info("Songs [%s]: %s", url, songs)
@@ -455,14 +461,14 @@ def PlayMediaWrapper(topic: List[str], payload: bytes):
 def PlayYoutubeWrapper(topic: List[str], payload: bytes):
     global CAST_DEVICES
     host = topic[4]
-    video_id = str(payload, 'utf-8')
+    video_id = payload.decode('utf-8')
     logging.info("PlayYoutubeWrapper %s %s", host, video_id)
     CAST_DEVICES.PlayYoutube(host, video_id)
 
 
 def StopMediaWrapper(topic: List[str], payload: bytes):
     global CAST_DEVICES
-    host = topic[4]
+    host = topic[3]
     CAST_DEVICES.PlayMedia(host, "")
 
 
@@ -476,7 +482,7 @@ def StopMediaWrapper(topic: List[str], payload: bytes):
 
 def LoadUrlWrapper(topic: List[str], payload: bytes):
     global CAST_DEVICES
-    host = topic[4]
+    host = topic[3]
     url = str(payload, 'utf-8')
     CAST_DEVICES.LoadUrl(host, url)
 
@@ -486,26 +492,29 @@ def RescanDevices(topic: List[str], payload: bytes):
     CAST_DEVICES.UpdateCastDevices()
 
 
-ACTION_MAP = {"scan":  RescanDevices,
+ACTION_MAP = {"rescan":  RescanDevices,
               "play_media": PlayMediaWrapper,
               # "play_youtube": PlayYoutubeWrapper,
               "stop_media": StopMediaWrapper,
               "load_url": LoadUrlWrapper
               }
 
-DISPATCH = [(f"/mqtt2cast/action/{key}/#", val)
+DISPATCH = [(f"chromecast/action/{key}/#", val)
             for key, val in ACTION_MAP.items()]
 # ("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
 
+
+############################################################
 
 def RenderStatusPage(history_log, cast_devices):
     global HTML_PROLOG, HTML_EPILOG
     html = ["<table border=1>"]
     last = None
     for host, kind in sorted(history_log.keys()):
+        cast = cast_devices.host_map[host]
         timestamp, data = history_log[(host, kind)]
         if host != last:
-            html.append("<tr><th colspan=3>%s</th></tr>" % host)
+            html.append(f"<tr><th colspan=3>{host} {cast.name}</th></tr>")
             last = host
 
         content = [str(type(data))]
@@ -517,18 +526,19 @@ def RenderStatusPage(history_log, cast_devices):
                 "\n".join(content))))
     html += ["</table>"]
     html += ["<hr>",
+             "<pre>",
+             "Note the devices and actions listed below also reflect the available mqtt commands, e.g.:",
+             "topic is chromecast/action/ACTION/DEVICE payload contain the argument",
+             "</pre>",
              "<form action=/action method=post>"]
+
     html += ["<select name=device>"]
-    for name in cast_devices.name_map.keys():
-        html += [f"<option value='{name}'>{name}</option>"]
+    html += [f"<option value='{name}'>{name}</option>" for name in cast_devices.name_map.keys()]
     html += ["</select>"]
-    html += ["<select name=action>",
-             "<option value=play_media>play_media</option>",
-             #"<option value=play_youtube>play_youtube</option>",
-             "<option value=stop_media>stop_media</option>",
-             "<option value=play_url>play_url</option>",
-             "<option value=scan>scan</option>",
-             "</select>"]
+
+    html += ["<select name=action>"]
+    html += [f"<option value={action}>{action}</option>" for action in ACTION_MAP.keys()]
+    html += ["</select>"]
 
     html += ["<input type=text name=arg>",
              "<input type=submit value=Send>",
@@ -564,12 +574,12 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
 
-logging.info("start device manager")
-CAST_DEVICES = CastDeviceManager()
-
 logging.info("starting mqtt handler")
 MQTT_CLIENT = MqttClient("mqtt2cast", ARGS.mqtt_broker,
                          ARGS.mqtt_port, DISPATCH)
+
+logging.info("start device manager")
+CAST_DEVICES = CastDeviceManager()
 
 
 logging.info("starting web interfaces on port %d", ARGS.port)
