@@ -27,6 +27,7 @@ import pychromecast.controllers.dashcast as dashcast
 # needs casttube
 # import pychromecast.controllers.youtube as youtube
 
+MESSAGE_PREFIX = f"mqtt2cast/{platform.node()}/"
 
 PARSER = argparse.ArgumentParser(description="mqtt2cast")
 PARSER.add_argument("--mqtt_broker", default="192.168.1.1")
@@ -355,7 +356,7 @@ class MqttClient:
         self.dispatcher = dispatcher
         self.client = mqtt.Client(name)
         self.client.will_set(
-            f"{name}/{platform.node}/sys/status", "0", retain=True)
+            f"{MESSAGE_PREFIX}sys/status", "0", retain=True)
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         self.client.on_log = self.on_log
@@ -366,15 +367,15 @@ class MqttClient:
     # paho API - problems will be silently ignored without this
     def on_log(client, userdata, level, buff):
         print("!!!!!!!!!!!!!!!!!")
-        log.error("paho problem %s %s %s", userdata, level, buff)
+        log.error(f"paho problem {userdata} {level} {buff}")
 
     def EmitMessage(self, topic, message, retain=True):
-        logging.info("MQTT %s %s", topic, message)
+        logging.info(f"MQTT {topic} {message}")
         self.client.publish(topic, message, retain)
 
     def EmitStatusMessage(self):
         self.EmitMessage(
-            f"{self.name}/{platform.node}/sys/status", "1", retain=True)
+            f"{MESSAGE_PREFIX}sys/status", "1", retain=True)
 
     # in its infinite wisdom, paho silently drops errors in callbacks
     @exception
@@ -448,7 +449,7 @@ def GetSongs(url, mime_type):
 def PlayMediaWrapper(topic: List[str], payload: str):
     global CAST_DEVICES
     token = payload.split()
-    host = topic[1]
+    host = topic[-2]
     url = token[0]
     mime_type = token[1] if len(token) > 1 else ""
     logging.info(f"PlayMediaWrapper {host} {url} {mime_type}")
@@ -462,7 +463,7 @@ def PlayMediaWrapper(topic: List[str], payload: str):
 
 def PlayYoutubeWrapper(topic: List[str], video_id: str):
     global CAST_DEVICES
-    host = topic[1]
+    host = topic[-2]
     logging.info("PlayYoutubeWrapper %s %s", host, video_id)
     for cast in CAST_DEVICES.GetCasts(host):
         cast.PlayYoutube(video_id)
@@ -470,7 +471,7 @@ def PlayYoutubeWrapper(topic: List[str], video_id: str):
 
 def StopMediaWrapper(topic: List[str], payload: str):
     global CAST_DEVICES
-    host = topic[1]
+    host = topic[-2]
     for cast in CAST_DEVICES.GetCasts(host):
         cast.PlayMedia("")
 
@@ -485,14 +486,14 @@ def StopMediaWrapper(topic: List[str], payload: str):
 
 def LoadUrlWrapper(topic: List[str], url: str):
     global CAST_DEVICES
-    host = topic[1]
+    host = topic[-2]
     for cast in CAST_DEVICES.GetCasts(host):
         cast.LoadUrl(url)
 
 
 def SetVolumeWrapper(topic: List[str], level: str):
     global CAST_DEVICES
-    host = topic[1]
+    host = topic[-2]
     level = float(level)
     for cast in CAST_DEVICES.GetCasts(host):
         cast.SetVolume(level)
@@ -500,7 +501,7 @@ def SetVolumeWrapper(topic: List[str], level: str):
 
 def QueueNextWrapper(topic: List[str], dummy: str):
     global CAST_DEVICES
-    host = topic[1]
+    host = topic[-2]
     for cast in CAST_DEVICES.GetCasts(host):
         cast.QueueNext()
 
@@ -519,7 +520,7 @@ ACTION_MAP = {"rescan":  RescanDevices,
               "queue_next": QueueNextWrapper,
               }
 
-DISPATCH = [(f"chromecast/+/action/{key}", val)
+DISPATCH = [(f"{MESSAGE_PREFIX}action/+/{key}", val)
             for key, val in ACTION_MAP.items()]
 # ("/mqtt2cast/action/alarm/#", PlayAlarmWrapper),
 
