@@ -236,20 +236,18 @@ class CastDeviceWrapper:
         self.EmitMessage("connection_status", status)
 
     def PlayMedia(self, song_url: str, mime_type="audio/mpeg3"):
-        logging.info("PlayMedia %s %s", song_url, mime_type)
         mc = self.cast.media_controller
         # print ("BEFORE", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
         LogHistory(self.host, "play_url", song_url)
         # mc.stop()
         # mc.block_until_active()
         # mc.play_media(song_url, mime_type, stream_type="LIVE")
-        mc.play_media(song_url, mime_type)
+        mc.play_media(song_url, content_type=mime_type)
         # print ("AFTER", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
         # self.history.log(self.host, "cast_status", self.cast.status)
         # self.history.log(self.host, "media_status", mc.status)
 
     def PlayYoutube(self, video_id: str):
-        logging.info("PlayYoutube %s", song_id)
         yt = self.cast.yt
         LogHistory(self.host, "play_video", video_id)
         yt.play_video(video_id)
@@ -267,6 +265,10 @@ class CastDeviceWrapper:
                 break
             time.sleep(0.1)
             dc.load_url(url)
+
+    def SetVolume(self, level: float):
+        LogHistory(self.host, "set_volume", str(float))
+        self.cast.set_volume(level)
 
 
 class CastDeviceManager:
@@ -342,6 +344,10 @@ class CastDeviceManager:
         for cast in self.GetCasts(host):
             cast.LoadUrl(url)
 
+    def SetVolume(self, host, level: float):
+        for cast in self.GetCasts(host):
+            cast.SetVolume(level)
+
     def __str__(self):
         out = []
         for dev, cast in self.device_map.items():
@@ -401,12 +407,12 @@ class MqttClient:
             for sub, action in self.dispatcher:
                 if mqtt.topic_matches_sub(sub, msg.topic):
                     print("match: ", sub)
-                    action(msg.topic.split("/"), msg.payload)
+                    action(msg.topic.split("/"), msg.payload.decode("utf-8"))
                     break
             else:
                 logging.warning("message did no match")
         except Exception as err:
-            logging.error("failure: %s", str(err))
+            logging.error(f"failure: {type(err)} {err}")
 
 
 ############################################################
@@ -446,10 +452,9 @@ def GetSongs(url):
     return songs
 
 
-def PlayMediaWrapper(topic: List[str], payload: bytes):
+def PlayMediaWrapper(topic: List[str], url: str):
     global CAST_DEVICES
     host = topic[3]
-    url = payload.decode('utf-8')
     logging.info("PlayMediaWrapper %s %s", host, url)
     songs = GetSongs(url)
     logging.info("Songs [%s]: %s", url, songs)
@@ -458,21 +463,20 @@ def PlayMediaWrapper(topic: List[str], payload: bytes):
     CAST_DEVICES.PlayMedia(host, songs[0])
 
 
-def PlayYoutubeWrapper(topic: List[str], payload: bytes):
+def PlayYoutubeWrapper(topic: List[str], video_id: str):
     global CAST_DEVICES
     host = topic[4]
-    video_id = payload.decode('utf-8')
     logging.info("PlayYoutubeWrapper %s %s", host, video_id)
     CAST_DEVICES.PlayYoutube(host, video_id)
 
 
-def StopMediaWrapper(topic: List[str], payload: bytes):
+def StopMediaWrapper(topic: List[str], payload: str):
     global CAST_DEVICES
     host = topic[3]
     CAST_DEVICES.PlayMedia(host, "")
 
 
-# def PlayAlarmWrapper(topic: List[str], payload: bytes):
+# def PlayAlarmWrapper(topic: List[str], payload: str):
 #     if len(topic) == 1:
 #         topic.append("ALL")
 #     if not payload:
@@ -480,14 +484,20 @@ def StopMediaWrapper(topic: List[str], payload: bytes):
 #     PlayRadioWrapper(topic, payload)
 
 
-def LoadUrlWrapper(topic: List[str], payload: bytes):
+def LoadUrlWrapper(topic: List[str], url: str):
     global CAST_DEVICES
     host = topic[3]
-    url = str(payload, 'utf-8')
     CAST_DEVICES.LoadUrl(host, url)
 
 
-def RescanDevices(topic: List[str], payload: bytes):
+def SetVolumeWrapper(topic: List[str], level: str):
+    global CAST_DEVICES
+    host = topic[3]
+    level = float(level)
+    CAST_DEVICES.SetVolume(host, level)
+
+
+def RescanDevices(topic: List[str], payload: str):
     global CAST_DEVICES
     CAST_DEVICES.UpdateCastDevices()
 
@@ -496,7 +506,8 @@ ACTION_MAP = {"rescan":  RescanDevices,
               "play_media": PlayMediaWrapper,
               # "play_youtube": PlayYoutubeWrapper,
               "stop_media": StopMediaWrapper,
-              "load_url": LoadUrlWrapper
+              "load_url": LoadUrlWrapper,
+              "set_volume": SetVolumeWrapper,
               }
 
 DISPATCH = [(f"chromecast/action/{key}/#", val)
@@ -568,7 +579,7 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         arg = fields.get("arg", [""])[0]
         logging.info(f"web action [{action}] [{device}] [{arg}]")
         wrapper = ACTION_MAP.get(action, RescanDevices)
-        wrapper(["", "", "", "", device], arg.encode("utf-8"))
+        wrapper(["", "", "", device], arg)
         self.send_response(301)
         self.send_header('Location', '/')
         self.end_headers()
