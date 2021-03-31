@@ -32,7 +32,7 @@ MESSAGE_PREFIX = f"mqtt2cast/"
 
 PARSER = argparse.ArgumentParser(description="mqtt2cast")
 PARSER.add_argument("--mqtt_broker", default="192.168.1.1")
-PARSER.add_argument("--mqtt_port", default=1883)
+PARSER.add_argument("--mqtt_port", type=int, default=1883)
 PARSER.add_argument("--dryrun", action="store_true", default=False)
 PARSER.add_argument("--verbose", action="store_true", default=False)
 PARSER.add_argument("--debug", action="store_true", default=False)
@@ -41,7 +41,7 @@ PARSER.add_argument("--scan_subnets", action='append',
                     help="scan this subnet (e.g. '192.168.1.0/24') potentially beside using zeroconf")
 PARSER.add_argument("--host", default="",
                     help="hostname to use for debug webserver")
-PARSER.add_argument("--port", default=7777,
+PARSER.add_argument("--port", type=int, default=7777,
                     help="port to use for debug webserver")
 
 GOOGLE_CAST_IDENTIFIER = "_googlecast._tcp.local."
