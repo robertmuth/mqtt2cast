@@ -1,37 +1,44 @@
 ## MQTT <-> Google Cast Bridge
 
 
+Mote: this is very much work in progress.
+
+
 Typical invocation
 
 ```
-./mqtt2cast.py -v --use_zeroconf
+./mqtt2cast.py --verbose --use_zeroconf --mqtt_broker BROKER 
 
 ```
 
 ### MQTT messages
 
-#### Subscribed
+#### Messages that the bridges is listening for
 
-* `/mqtt2cast/action/play_media/<friendly name>`   `<url>`
-  Play/Show the given media file
-* `/mqtt2cast/action/load_url/<friendly name>`   `<url>`
+* `mqtt2cast/action/<friendly name>/play_media`   `<url> [<mime_type>]`
+  Play/Show the given media file (can be a playlist
+* `mqtt2cast/action/<friendly name>/load_url`   `<url>`
   Display a URL (does not work for all URLs)
+* `mqtt2cast/action/<friendly name>/queue_next`
+  Skip current song - extremely flaky, needs more work
+* `mqtt2cast/action/<friendly name>/set_volume`  `<value between 0 and 1>`
   
-  
-Testing
-```
-mosquitto_pub -h 192.168.1.1 -t "/mqtt2cast/action/play_media/Kitchen Speaker" -m "http://somafm.com/lush130.pls"
 
-```
-
-  
-#### Published
-
-* `/mqtt2cast/<friendly-name>/<event_kind>` `<json>` 
 
 Testing
 ```
-mosquitto_sub -v -h 192.168.1.1 -t "/mqtt2cast/#"
+mosquitto_pub -h BORKER -t "mqtt2cast/action/<friendly name>/play_media" -m "http://somafm.com/lush130.pls"
+
+```
+
+  
+#### Message that the bridge is emitting
+
+* `mqtt2cast/event/<friendly-name>/<event_kind>` `<json>` 
+
+Testing
+```
+mosquitto_sub -v -h BROKER -t "mqtt2cast/#"
 ```
 
 ### Webserver

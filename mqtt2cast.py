@@ -27,7 +27,7 @@ import pychromecast.controllers.dashcast as dashcast
 # needs casttube
 # import pychromecast.controllers.youtube as youtube
 
-#MESSAGE_PREFIX = f"mqtt2cast/{platform.node()}/"
+# MESSAGE_PREFIX = f"mqtt2cast/{platform.node()}/"
 MESSAGE_PREFIX = f"mqtt2cast/"
 
 PARSER = argparse.ArgumentParser(description="mqtt2cast")
@@ -185,7 +185,8 @@ class UrlCastController(pychromecast.controllers.BaseController):
         self.send_message({"type": kind, "url": url})
 
 
-class CastDeviceWrapper:
+class CastDeviceWrapper(pychromecast.controllers.media.MediaStatusListener,
+                        pychromecast.controllers.receiver.CastStatusListener):
     """
     Wrapps a single device - it would be nice if this could also model
     speaker groups one day.
@@ -267,6 +268,11 @@ class CastDeviceWrapper:
                 break
             time.sleep(0.1)
             dc.load_url(url)
+
+    def QuitApp(self):
+        """This sometimes helps with stuck apps"""
+        LogHistory(self.host, "quit_app", "")
+        self.cast.quit_app()
 
     def QueueNext(self):
         LogHistory(self.host, "queue_next", "")
@@ -525,6 +531,13 @@ def QueueNextWrapper(topic: List[str], dummy: str):
         cast.QueueNext()
 
 
+def QuitAppWrapper(topic: List[str], payload: str):
+    global CAST_DEVICES
+    host = topic[-2]
+    for cast in CAST_DEVICES.GetCasts(host):
+        cast.QuitApp()
+
+
 def RescanDevices(topic: List[str], payload: str):
     global CAST_DEVICES
     CAST_DEVICES.UpdateCastDevices()
@@ -537,6 +550,7 @@ ACTION_MAP = {"rescan":  RescanDevices,
               "load_url": LoadUrlWrapper,
               "set_volume": SetVolumeWrapper,
               "queue_next": QueueNextWrapper,
+              "quit_app": QuitAppWrapper,
               }
 
 DISPATCH = [(f"{MESSAGE_PREFIX}action/+/{key}", val)
