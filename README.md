@@ -7,7 +7,7 @@ Mote: this is very much work in progress.
 Typical invocation
 
 ```
-./mqtt2cast.py --verbose --use_zeroconf --mqtt_broker BROKER 
+./mqtt2cast.py --verbose --use_zeroconf --mqtt_broker MQTT-BROKER 
 
 ```
 
@@ -15,30 +15,33 @@ Typical invocation
 
 #### Messages that the bridges is listening for
 
-* `mqtt2cast/action/<friendly name>/play_media`   `<url> [<mime_type>]`
+* `mqtt2cast/action/CAST-DEVICE/play_media`   `<url> [<mime_type>]`
   Play/Show the given media file (can be a playlist
-* `mqtt2cast/action/<friendly name>/load_url`   `<url>`
+* `mqtt2cast/action/CAST-DEVICE/load_url`   `<url>`
   Display a URL (does not work for all URLs)
-* `mqtt2cast/action/<friendly name>/queue_next`
+* `mqtt2cast/action/CAST-DEVICE/queue_next`
   Skip current song - extremely flaky, needs more work
-* `mqtt2cast/action/<friendly name>/set_volume`  `<value between 0 and 1>`
+* `mqtt2cast/action/CAST-DEVICE/set_volume`  `<value between 0 and 1>`
   
-
+CAST-DEVICE is on off:
+* ip-address
+* friendly name
+* empty string which means all devices will receive the command
 
 Testing
 ```
-mosquitto_pub -h BORKER -t "mqtt2cast/action/<friendly name>/play_media" -m "http://somafm.com/lush130.pls"
+mosquitto_pub -h BORKER -t "mqtt2cast/action/CAST-DEVICE/play_media" -m "http://somafm.com/lush130.pls"
 
 ```
 
   
 #### Message that the bridge is emitting
 
-* `mqtt2cast/event/<friendly-name>/<event_kind>` `<json>` 
+* `mqtt2cast/event/FRIENDLY-NAME/<event_kind>` `<json>` 
 
 Testing
 ```
-mosquitto_sub -v -h BROKER -t "mqtt2cast/#"
+mosquitto_sub -v -h MQTT-BROKER -t "mqtt2cast/#"
 ```
 
 ### Webserver

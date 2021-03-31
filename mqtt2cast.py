@@ -219,7 +219,7 @@ class CastDeviceWrapper(pychromecast.controllers.media.MediaStatusListener,
     def EmitMessage(self, event, data):
         global MQTT_CLIENT
         MQTT_CLIENT.EmitMessage(
-            f"mqtt2cast/{self.name}/event/{event}",
+            f"{MESSAGE_PREFIX}event/{self.name}/event/{event}",
             json.dumps(ObjToDict(data), cls=ComplexEncoder))
         LogHistory(self.host, event, data)
 
@@ -301,6 +301,9 @@ class CastDeviceManager:
             self.host_map[cast.host] = cast
             logging.info(f"adding name: [{cast.name}]")
             self.name_map[cast.name] = cast
+            MQTT_CLIENT.EmitMessage(
+                f"{MESSAGE_PREFIX}devices",
+                json.dumps(list(self.name_map.keys())))
         except Exception as err:
             if not isinstance(err, pychromecast.error.ChromecastConnectionError):
                 logging.error(
@@ -337,12 +340,12 @@ class CastDeviceManager:
 
     def GetCasts(self, host: str):
         if not host:
-            return list(self.host_map.keys())
+            return list(self.host_map.values())
         if host in self.host_map:
             return [self.host_map[host]]
         if host in self.name_map:
             return [self.name_map[host]]
-        logging.warning("host not found: [%s] %s", host, self.name_map.keys())
+        logging.warning(f"host not found: [{host}] {self.name_map.keys()}")
         return []
 
     def __str__(self):
@@ -435,10 +438,14 @@ def GetM3uSongs(data):
     return out
 
 
+PLAYLIST_MIMETYPES = ["audio/x-mpegurl"]
+
+
 def GetSongs(url, mime_type):
     global URL_MAP
     # if url.startswith("@"):
     #    return [URL_MAP[url[1:]]]
+    print("#########", mime_type)
     if mime_type and mime_type not in PLAYLIST_MIMETYPES:
         return [songs]
 
