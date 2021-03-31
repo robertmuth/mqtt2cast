@@ -27,7 +27,8 @@ import pychromecast.controllers.dashcast as dashcast
 # needs casttube
 # import pychromecast.controllers.youtube as youtube
 
-MESSAGE_PREFIX = f"mqtt2cast/{platform.node()}/"
+#MESSAGE_PREFIX = f"mqtt2cast/{platform.node()}/"
+MESSAGE_PREFIX = f"mqtt2cast/"
 
 PARSER = argparse.ArgumentParser(description="mqtt2cast")
 PARSER.add_argument("--mqtt_broker", default="192.168.1.1")
@@ -144,7 +145,7 @@ HTML_EPILOG = """
 HISTORY_LOG: Dict[Tuple[Any, Any], Any] = {}
 
 
-def LogHistory(host, kind, data):
+def LogHistory(host: str, kind: str, data: Any):
     global HISTORY_LOG
     now = time.strftime("%y/%m/%d %H:%M:%S")
     logging.info(f"{host} {kind} {now}")
@@ -188,6 +189,7 @@ class CastDeviceWrapper:
     """
     Wrapps a single device - it would be nice if this could also model
     speaker groups one day.
+    The class also functions as a StatusListener and MediaStatusListener
     """
 
     def __init__(self, host):
@@ -240,17 +242,12 @@ class CastDeviceWrapper:
     def new_connection_status(self, status):
         self.EmitMessage("connection_status", status)
 
-    def PlayMedia(self, song_url: str, mime_type="audio/mpeg3", enqueue=False):
+    def PlayMedia(self, song_url: str, mime_type: str, enqueue: bool):
         mc = self.cast.media_controller
-        # print ("BEFORE", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
-        LogHistory(self.host, "play_url", song_url)
-        # mc.stop()
-        # mc.block_until_active()
-        # mc.play_media(song_url, mime_type, stream_type="LIVE")
+        LogHistory(self.host, "play_url", (song_url, mime_type, enqueue))
         mc.play_media(song_url, content_type=mime_type, enqueue=enqueue)
-        # print ("AFTER", mc.is_playing, mc.is_paused, mc.is_idle, mc.title)
-        # self.history.log(self.host, "cast_status", self.cast.status)
-        # self.history.log(self.host, "media_status", mc.status)
+        if not enqueue:
+            mc.block_until_active()
 
     def PlayYoutube(self, video_id: str):
         yt = self.cast.yt
@@ -436,14 +433,17 @@ def GetSongs(url, mime_type):
     global URL_MAP
     # if url.startswith("@"):
     #    return [URL_MAP[url[1:]]]
-    songs = [url]
+    if mime_type and mime_type not in PLAYLIST_MIMETYPES:
+        return [songs]
+
     if url.endswith("pls"):
         data = urllib.request.urlopen(url).read()
-        songs = GetPlsSongs(data)
+        return GetPlsSongs(data)
     elif url.endswith("m3u"):
         data = urllib.request.urlopen(url).read()
-        songs = GetM3uSongs(data)
-    return songs
+        return GetM3uSongs(data)
+    else:
+        return [url]
 
 
 def PlayMediaWrapper(topic: List[str], payload: str):
@@ -454,17 +454,36 @@ def PlayMediaWrapper(topic: List[str], payload: str):
     mime_type = token[1] if len(token) > 1 else ""
     logging.info(f"PlayMediaWrapper {host} {url} {mime_type}")
     songs = GetSongs(url, mime_type)
+    # songs = [
+    #     "https://www.bensound.com/bensound-music/bensound-jazzyfrenchy.mp3",
+    #     "https://audio.guim.co.uk/2020/08/14-65292-200817TIFXR.mp3",
+    #     "http://ice4.somafm.com/secretagent-128-aac",
+    #     "http://ice4.somafm.com/groovesalad-128-aac",
+    #     "http://ice4.somafm.com/lush-128-aac",
+    # ]
     logging.info("Songs [%s]: %s", url, songs)
-    if not songs:
-        return
-    for cast in CAST_DEVICES.GetCasts(host):
-        cast.PlayMedia(songs[0], enqueue=False)
+    for n, song in enumerate(songs):
+        if song.endswith("aac"):
+            mime_type = "audio/aac"
+        elif song.endswith("wav"):
+            mime_type = "audio/wav"
+        elif song.endswith("flac"):
+            mime_type = "audio/flac"
+        else:
+            mime_type = "audio/mpeg"
+
+        for cast in CAST_DEVICES.GetCasts(host):
+            if n == 0:
+                cast.PlayMedia(song, mime_type=mime_type, enqueue=False)
+            else:
+                cast.PlayMedia(song, mime_type=mime_type, enqueue=True)
+            time.sleep(.2)
 
 
 def PlayYoutubeWrapper(topic: List[str], video_id: str):
     global CAST_DEVICES
     host = topic[-2]
-    logging.info("PlayYoutubeWrapper %s %s", host, video_id)
+    logging.info(f"PlayYoutubeWrapper {host} {video_id}")
     for cast in CAST_DEVICES.GetCasts(host):
         cast.PlayYoutube(video_id)
 
@@ -549,7 +568,7 @@ def RenderStatusPage(history_log, cast_devices):
     html += ["<hr>",
              "<pre>",
              "Note the devices and actions listed below also reflect the available mqtt commands, e.g.:",
-             "topic is chromecast/DEVICE/action/ACTION payload contain the argument",
+             "topic is mqtt2cast/action/DEVICE/ACTION payload contain the argument",
              "</pre>",
              "<form action=/action method=post>"]
 
@@ -589,7 +608,7 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         arg = fields.get("arg", [""])[0]
         logging.info(f"web action [{action}] [{device}] [{arg}]")
         wrapper = ACTION_MAP.get(action, RescanDevices)
-        wrapper(["", "", "", device], arg)
+        wrapper(["", "", "", device, ""], arg)
         self.send_response(301)
         self.send_header('Location', '/')
         self.end_headers()
